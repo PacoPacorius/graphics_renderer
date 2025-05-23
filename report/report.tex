@@ -1,0 +1,135 @@
+\documentclass{article} 
+\usepackage{polyglossia} 
+\usepackage{amsmath}
+\usepackage{fontspec} 
+\usepackage{lipsum} 
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx} 
+\usepackage{caption} 
+\usepackage{subcaption}
+\usepackage{hyperref} 
+\usepackage{listing}
+\hypersetup{% 
+    colorlinks=true, linkcolor=blue, filecolor=magenta,      
+    urlcolor=cyan, 
+    pdfinfo = {%
+        Title = Γραφική, Πλήρωση Πολυγώνων
+        Author = {Χρήστος Μάριος Περδίκης},
+        Producer = XeLaTeX,
+    } 
+}
+
+\setmainfont{FreeSerif}
+
+
+\title{Πλήρωση Πολυγώνων}
+\date{Εαρινό Εξάμηνο 2024-2025}
+\author{Χρήστος-Μάριος Περδίκης 10075 cperdikis@ece.auth.gr}
+
+\begin{document}
+\maketitle
+%Prompt:
+%I want to make a graphics renderer in python. It is comprised of the following
+%functions:
+%
+%def translate(t_vec: np.ndarray) -> np.ndarray:
+%"""
+%Create an affine transformation matrix w.r.t. the
+%specified translation vector.
+%"""
+%return xform
+%
+%t_vec is a 1x3 translation vector and the output is xform,
+%a 4x4 affine transformation matrix.
+%
+%
+%def rotate(axis: np.ndarray, angle: float, center: np.ndarray) -> np.ndarray:
+%"""
+%Create an affine transformation matrix w.r.t. the
+%specified rotation.
+%"""
+%return xform
+%
+%axis specifies the rotation axis (1x3). angle is the rotation angle in rads (scalar). 
+%Rotation counter-clockwise. center is the center point of the rotation axis.
+%The ouput xform is the 4x4 affine rotation matrix.
+%
+%
+%def compose(mat1: np.ndarray, mat2: np.ndarray) -> np.ndarray:
+%return mat
+%
+%This function combines two transformation matrices into one.
+%
+%
+%def world2view(pts: np.ndarray, R: np.ndarray, c0: np.ndarray) -> np.ndarray:
+%# Implements a world-to-view transform, i.e. transforms the specified
+%# points to the coordinate frame of a camera. The camera coordinate frame
+%# is specified rotation (w.r.t. the world frame) and its point of reference
+%# (w.r.t. to the world frame). This function will make use of the above
+%# functions when necessary.
+%
+%pts is a 3xN matrix with the coords of the points in the original coordinate system.
+%R is a rotation matrix of the new coord system in the relation to the original
+%coord system. c0 is the point of reference of the new coord system in relation
+%to the original.
+%
+%
+%def lookat(eye: np.ndarray, up: np.ndarray, target: np.ndarray) -> Tuple[np.ndarray,
+%np.ndarray]:
+%# Calculate the camera's view matrix (i.e., its coordinate frame transformation specified
+%# by a rotation matrix R, and a translation vector t).
+%# :return a tuple containing the rotation matrix R (3 x 3) and a translation vector 
+%# t (1 x 3)
+%
+%eye is the center point of the camera (1x3)
+%up is the up vector of the camera (1x3)
+%target is the target point the camera points to (1x3)
+%
+%
+%def perspective_project(pts: np.ndarray, focal: float, R: np.ndarray, t: np.ndarray)
+%-> Tuple[np.ndarray, np.ndarray]:
+%# Project the specified 3d points pts on the image plane, according to a pinhole
+%# perspective projection model.
+%
+%pts is a 3xN matrix with the coords of the input points. focal is focal length
+%of the camera. R (3x3) is the rotation matrix w.r.t. the camera coordinate system.
+%t is the translation vector (1x3) w.r.t. the camera coordinate system. The function
+%returns 2D point coords on the camera plane.
+%
+%
+%def rasterize(pts_2d: np.ndarray, plane_w: int, plane_h: int, res_w: int, res_h: int)
+%-> np.ndarray:
+%# Rasterize the incoming 2d points from the camera plane to image pixel
+%coordinates
+%
+%The camera plane has a size of plane_h x plane_w. The image has a size of res_h x res_w.
+%The beginning of the image is in the bottom left corner and increments going up and to 
+%the right. The camera plane's center is in the center of the rectangle plane_h x plane_w.
+%
+%
+%def render_object(v_pos, v_clr, t_pos_idx, plane_h, plane_w, res_h, res_w, focal, eye, up, target) -> np.ndarray:
+%# render the specified object from the specified camera.
+%
+%v_pos (Nx3) are the 3D coordinates of vertices of the object. v_clr (Nx3) is 
+%the matrix of the colors corresponding to the vertices. t_pos_idx (Fx3) is the 
+%matrix that points to which vertices form the triangles that form the 3D object.
+%The i-th line of this matrix contains the vertices (from the matrices
+%v_pos and v_clr) that make up a triangle. plane_h and plane_w is the height and 
+%the width of the camera plane. res_h and res_w are the image canvas size in pixels.
+%focal is the focal length, the distance of the camera plane from the camera center.
+%eye is the center of the camera w.r.t. the world coordinate system. up is the 
+%up vector of the camera. target is the point the camera points to. The function
+%will return the image of the object in a matrix (size res_h x res_w x 3) and 
+%will implement the whole pipeline of rendering an object. It will also use the 
+%attached files to fill and color the object with the Gouraud method. 
+%
+%Load the initial data from the hw2.npy file. An object is moving in a circular
+%road with the center k_circle_center and radius k_circle_radius with speed
+%k_car_velocity. There is a camera next to the object, its relative position to
+%the object is k_cam_rel_pos. Create two demos, one for each of the following
+%cases. Case 1: the camera is static and the z axis of the camera is always
+%in parallel to the speed vector of the car. Case 2: The camera can spin 
+%around as the car moves and it always points to the point k_cam_target.
+%
+%(attach hw2.npy, polygon_fill.py and vec_inter.py)
+\end{document}

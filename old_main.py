@@ -142,68 +142,71 @@ def rasterize(pts_2d: np.ndarray, plane_w: int, plane_h: int, res_w: int, res_h:
 
 def render_object(v_pos, v_clr, t_pos_idx, plane_h, plane_w, res_h, res_w, focal, eye, up, target, v_uvs=None, shading='t', texture_img=None) -> np.ndarray:
     """
-    Render the specified object with perspective-correct texture mapping (no polygon_fill).
+    Render the object using custom triangle rasterization and perspective-correct texture mapping.
     """
-    # Prepare empty image
     img = np.ones((res_h, res_w, 3), dtype=np.uint8) * 255
     z_buffer = np.full((res_h, res_w), np.inf)
 
-    # Camera transform
     R, t = lookat(eye, up, target)
     pts_2d, depths = perspective_project(v_pos.T, focal, R, t)
-    pts_raster = rasterize(pts_2d, plane_w, plane_h, res_w, res_h).T
+    pts_raster = rasterize(pts_2d, plane_w, plane_h, res_w, res_h).T  # (N, 2)
 
-    # Default UVs
     if v_uvs is None:
         v_uvs = np.zeros((v_pos.shape[0], 2))
 
-    # Perspective divide values
     inv_z = 1.0 / depths
-    uvs_proj = v_uvs * inv_z[:, None]
+    u_over_z = (v_uvs[:, 0] * inv_z)
+    v_over_z = (v_uvs[:, 1] * inv_z)
 
-    # Loop over triangles
     for tri in t_pos_idx:
-        idx0, idx1, idx2 = tri
-        verts = np.array([pts_raster[idx0], pts_raster[idx1], pts_raster[idx2]])
-        z_vals = np.array([depths[idx0], depths[idx1], depths[idx2]])
-        uvs = np.array([uvs_proj[idx0], uvs_proj[idx1], uvs_proj[idx2]])
-        invzs = inv_z[[idx0, idx1, idx2]]
+        i0, i1, i2 = tri
+        v0, v1, v2 = pts_raster[i0], pts_raster[i1], pts_raster[i2]
+        z0, z1, z2 = depths[i0], depths[i1], depths[i2]
+        iz0, iz1, iz2 = inv_z[i0], inv_z[i1], inv_z[i2]
+        u0, u1, u2 = u_over_z[i0], u_over_z[i1], u_over_z[i2]
+        v0_, v1_, v2_ = v_over_z[i0], v_over_z[i1], v_over_z[i2]
 
-        # Bounding box
-        min_x = max(int(np.floor(np.min(verts[:, 0]))), 0)
-        max_x = min(int(np.ceil(np.max(verts[:, 0]))), res_w - 1)
-        min_y = max(int(np.floor(np.min(verts[:, 1]))), 0)
-        max_y = min(int(np.ceil(np.max(verts[:, 1]))), res_h - 1)
+        # Triangle bounding box
+        min_x = max(int(np.floor(min(v0[0], v1[0], v2[0]))), 0)
+        max_x = min(int(np.ceil(max(v0[0], v1[0], v2[0]))), res_w - 1)
+        min_y = max(int(np.floor(min(v0[1], v1[1], v2[1]))), 0)
+        max_y = min(int(np.ceil(max(v0[1], v1[1], v2[1]))), res_h - 1)
 
-        # Edge functions
-        def edge_func(v0, v1, p):
-            return (p[0] - v0[0]) * (v1[1] - v0[1]) - (p[1] - v0[1]) * (v1[0] - v0[0])
+        # Edge function
+        def edge(a, b, c):
+            return (c[0] - a[0]) * (b[1] - a[1]) - (c[1] - a[1]) * (b[0] - a[0])
 
-        area = edge_func(verts[0], verts[1], verts[2])
-        if abs(area) < 1e-10:
+        area = edge(v0, v1, v2)
+        if area == 0:
             continue
 
         for y in range(min_y, max_y + 1):
             for x in range(min_x, max_x + 1):
                 p = np.array([x + 0.5, y + 0.5])
-                w0 = edge_func(verts[1], verts[2], p)
-                w1 = edge_func(verts[2], verts[0], p)
-                w2 = edge_func(verts[0], verts[1], p)
+                w0 = edge(v1, v2, p)
+                w1 = edge(v2, v0, p)
+                w2 = edge(v0, v1, p)
 
                 if (w0 >= 0 and w1 >= 0 and w2 >= 0) or (w0 <= 0 and w1 <= 0 and w2 <= 0):
                     w0 /= area
                     w1 /= area
                     w2 /= area
 
-                    z_interp = 1.0 / (w0 * invzs[0] + w1 * invzs[1] + w2 * invzs[2])
-                    if z_interp < z_buffer[y, x]:
-                        uv_interp = (w0 * uvs[0] + w1 * uvs[1] + w2 * uvs[2]) * z_interp
-                        tex_u = int(np.clip(uv_interp[0] * texture_img.shape[1], 0, texture_img.shape[1] - 1))
-                        tex_v = int(np.clip((1 - uv_interp[1]) * texture_img.shape[0], 0, texture_img.shape[0] - 1))  # flip Y
+                    inv_z_interp = w0 * iz0 + w1 * iz1 + w2 * iz2
+                    if inv_z_interp <= 0:
+                        continue
+                    z = 1.0 / inv_z_interp
 
-                        color = texture_img[tex_v, tex_u]
-                        img[y, x] = (color * 255).astype(np.uint8)
-                        z_buffer[y, x] = z_interp
+                    u_interp = (w0 * u0 + w1 * u1 + w2 * u2) * z
+                    v_interp = (w0 * v0_ + w1 * v1_ + w2 * v2_) * z
+
+                    if z < z_buffer[y, x]:
+                        tex_w, tex_h = texture_img.shape[1], texture_img.shape[0]
+                        tex_x = int(np.clip(u_interp * tex_w, 0, tex_w - 1))
+                        tex_y = int(np.clip((1 - v_interp) * tex_h, 0, tex_h - 1))  # flip Y
+
+                        img[y, x] = texture_img[tex_y, tex_x]
+                        z_buffer[y, x] = z
 
     return img
 

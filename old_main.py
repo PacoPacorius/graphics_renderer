@@ -140,40 +140,108 @@ def rasterize(pts_2d: np.ndarray, plane_w: int, plane_h: int, res_w: int, res_h:
 
     return pts_raster
 
-def render_object(v_pos, v_clr, t_pos_idx, plane_h, plane_w, res_h, res_w, focal, eye, up, target, v_uvs=None, shading='t') -> np.ndarray:
+def render_object(v_pos, v_clr, t_pos_idx, plane_h, plane_w, res_h, res_w, focal, eye, up, target, v_uvs=None, shading='t', texture_img=None) -> np.ndarray:
     """
-    Render the specified object from the specified camera using polygon_fill functions.
+    Render the specified object with perspective-correct texture mapping (no polygon_fill).
     """
-    # Get camera transformation
+    # Prepare empty image
+    img = np.ones((res_h, res_w, 3), dtype=np.uint8) * 255
+    z_buffer = np.full((res_h, res_w), np.inf)
+
+    # Camera transform
     R, t = lookat(eye, up, target)
-
-    # Project vertices to 2D
     pts_2d, depths = perspective_project(v_pos.T, focal, R, t)
+    pts_raster = rasterize(pts_2d, plane_w, plane_h, res_w, res_h).T
 
-    # Rasterize to pixel coordinates
-    pts_raster = rasterize(pts_2d, plane_w, plane_h, res_w, res_h)
-
-    # Convert to format expected by polygon_fill.render_img
-    # polygon_fill expects vertices as (N, 2) array
-    vertices_2d = pts_raster.T
-
-    # Ensure we have UV coordinates
+    # Default UVs
     if v_uvs is None:
-        # Create default UV coordinates if not provided
-        v_uvs = np.random.rand(v_pos.shape[0], 2)
+        v_uvs = np.zeros((v_pos.shape[0], 2))
 
-    # Call the polygon_fill.render_img function
-    # Note: render_img expects specific parameter order and formats
-    img = polygon_fill.render_img(
-        faces=t_pos_idx,
-        vertices=vertices_2d,
-        vcolors=v_clr,
-        uvs=v_uvs,
-        depth=depths,
-        shading=shading
-    )
+    # Perspective divide values
+    inv_z = 1.0 / depths
+    uvs_proj = v_uvs * inv_z[:, None]
+
+    # Loop over triangles
+    for tri in t_pos_idx:
+        idx0, idx1, idx2 = tri
+        verts = np.array([pts_raster[idx0], pts_raster[idx1], pts_raster[idx2]])
+        z_vals = np.array([depths[idx0], depths[idx1], depths[idx2]])
+        uvs = np.array([uvs_proj[idx0], uvs_proj[idx1], uvs_proj[idx2]])
+        invzs = inv_z[[idx0, idx1, idx2]]
+
+        # Bounding box
+        min_x = max(int(np.floor(np.min(verts[:, 0]))), 0)
+        max_x = min(int(np.ceil(np.max(verts[:, 0]))), res_w - 1)
+        min_y = max(int(np.floor(np.min(verts[:, 1]))), 0)
+        max_y = min(int(np.ceil(np.max(verts[:, 1]))), res_h - 1)
+
+        # Edge functions
+        def edge_func(v0, v1, p):
+            return (p[0] - v0[0]) * (v1[1] - v0[1]) - (p[1] - v0[1]) * (v1[0] - v0[0])
+
+        area = edge_func(verts[0], verts[1], verts[2])
+        if abs(area) < 1e-10:
+            continue
+
+        for y in range(min_y, max_y + 1):
+            for x in range(min_x, max_x + 1):
+                p = np.array([x + 0.5, y + 0.5])
+                w0 = edge_func(verts[1], verts[2], p)
+                w1 = edge_func(verts[2], verts[0], p)
+                w2 = edge_func(verts[0], verts[1], p)
+
+                if (w0 >= 0 and w1 >= 0 and w2 >= 0) or (w0 <= 0 and w1 <= 0 and w2 <= 0):
+                    w0 /= area
+                    w1 /= area
+                    w2 /= area
+
+                    z_interp = 1.0 / (w0 * invzs[0] + w1 * invzs[1] + w2 * invzs[2])
+                    if z_interp < z_buffer[y, x]:
+                        uv_interp = (w0 * uvs[0] + w1 * uvs[1] + w2 * uvs[2]) * z_interp
+                        tex_u = int(np.clip(uv_interp[0] * texture_img.shape[1], 0, texture_img.shape[1] - 1))
+                        tex_v = int(np.clip((1 - uv_interp[1]) * texture_img.shape[0], 0, texture_img.shape[0] - 1))  # flip Y
+
+                        color = texture_img[tex_v, tex_u]
+                        img[y, x] = (color * 255).astype(np.uint8)
+                        z_buffer[y, x] = z_interp
 
     return img
+
+
+#def render_object(v_pos, v_clr, t_pos_idx, plane_h, plane_w, res_h, res_w, focal, eye, up, target, v_uvs=None, shading='t') -> np.ndarray:
+    #"""
+    #Render the specified object from the specified camera using polygon_fill functions.
+    #"""
+    ## Get camera transformation
+    #R, t = lookat(eye, up, target)
+#
+    ## Project vertices to 2D
+    #pts_2d, depths = perspective_project(v_pos.T, focal, R, t)
+#
+    ## Rasterize to pixel coordinates
+    #pts_raster = rasterize(pts_2d, plane_w, plane_h, res_w, res_h)
+#
+    ## Convert to format expected by polygon_fill.render_img
+    ## polygon_fill expects vertices as (N, 2) array
+    #vertices_2d = pts_raster.T
+#
+    ## Ensure we have UV coordinates
+    #if v_uvs is None:
+        ## Create default UV coordinates if not provided
+        #v_uvs = np.random.rand(v_pos.shape[0], 2)
+#
+    ## Call the polygon_fill.render_img function
+    ## Note: render_img expects specific parameter order and formats
+    #img = polygon_fill.render_img(
+        #faces=t_pos_idx,
+        #vertices=vertices_2d,
+        #vcolors=v_clr,
+        #uvs=v_uvs,
+        #depth=depths,
+        #shading=shading
+    #)
+#
+    #return img
 
 def load_data():
     """
@@ -223,6 +291,7 @@ def demo_case1():
 
     # Load data
     data = load_data()
+    texImg = plt.imread('stone-72_diffuse.jpg')
 
     # Extract parameters
     k_road_radius = data['k_road_radius']
@@ -294,7 +363,8 @@ def demo_case1():
             k_cam_up,
             cam_target,
             v_uvs,
-            shading='t'  
+            shading='t',
+            texture_img=texImg
         )
 
         im.set_array(img)
@@ -320,6 +390,7 @@ def demo_case2():
 
     # Load data
     data = load_data()
+    texImg = plt.imread('stone-72_diffuse.jpg')
 
     # Extract parameters
     k_road_radius = data['k_road_radius']
@@ -385,7 +456,8 @@ def demo_case2():
             k_cam_up,
             cam_target,
             v_uvs,
-            shading='f'  # Use flat shading
+            shading='t',
+            texture_img=texImg
         )
 
         im.set_array(img)
@@ -455,93 +527,3 @@ if __name__ == "__main__":
     animations = main()
 
 
-#def render_object_simple(v_pos, v_clr, t_pos_idx, plane_h, plane_w, res_h, res_w, focal, eye, up, target) -> np.ndarray:
-    #"""
-    #Fallback simple rendering function (original implementation).
-    #"""
-    ## Get camera transformation
-    #R, t = lookat(eye, up, target)
-#
-    ## Project vertices to 2D
-    #pts_2d, depths = perspective_project(v_pos.T, focal, R, t)
-#
-    ## Rasterize to pixel coordinates
-    #pts_raster = rasterize(pts_2d, plane_w, plane_h, res_w, res_h)
-#
-    ## Create image
-    #img = np.ones((res_h, res_w, 3), dtype=np.uint8) * 255
-#
-    ## Simple triangle rendering (using your polygon_fill logic)
-    ## For this demo, we'll use a simplified approach
-    #vertices_2d = pts_raster.T
-#
-    ## Sort triangles by depth (painter's algorithm)
-    #triangle_depths = []
-    #for i in range(t_pos_idx.shape[0]):
-        #face = t_pos_idx[i]
-        #avg_depth = np.mean([depths[face[0]], depths[face[1]], depths[face[2]]])
-        #triangle_depths.append((i, avg_depth))
-#
-    ## Sort by depth (furthest first)
-    #triangle_depths.sort(key=lambda x: x[1], reverse=True)
-#
-    ## Render triangles
-    #for tri_idx, _ in triangle_depths:
-        #face = t_pos_idx[tri_idx]
-#
-        ## Get triangle vertices in pixel coordinates
-        #tri_vertices = vertices_2d[face]
-        #tri_colors = v_clr[face]
-#
-        ## Simple flat shading - use average color
-        #avg_color = np.mean(tri_colors, axis=0) * 255
-        #avg_color = avg_color.astype(np.uint8)
-#
-        ## Simple triangle fill (basic scanline)
-        #fill_triangle(img, tri_vertices, avg_color)
-#
-    #return img
-#
-#def fill_triangle(img, vertices, color):
-    #"""
-    #Simple triangle filling using scanline algorithm.
-    #"""
-    #h, w = img.shape[:2]
-#
-    ## Convert to integer coordinates
-    #vertices = np.round(vertices).astype(int)
-#
-    ## Find bounding box
-    #min_y = max(0, np.min(vertices[:, 1]))
-    #max_y = min(h-1, np.max(vertices[:, 1]))
-    #min_x = max(0, np.min(vertices[:, 0]))
-    #max_x = min(w-1, np.max(vertices[:, 0]))
-#
-    ## Simple point-in-triangle test for each pixel
-    #for y in range(min_y, max_y + 1):
-        #for x in range(min_x, max_x + 1):
-            #if point_in_triangle([x, y], vertices):
-                #img[h-1-y, x] = color  # Flip y coordinate, origin is bottom-left
-#
-#def point_in_triangle(p, triangle):
-    #"""
-    #Check if point p is inside triangle using barycentric coordinates.
-    #"""
-    #v0 = triangle[2] - triangle[0]
-    #v1 = triangle[1] - triangle[0]
-    #v2 = np.array(p) - triangle[0]
-#
-    #dot00 = np.dot(v0, v0)
-    #dot01 = np.dot(v0, v1)
-    #dot02 = np.dot(v0, v2)
-    #dot11 = np.dot(v1, v1)
-    #dot12 = np.dot(v1, v2)
-#
-    #denom = dot00 * dot11 - dot01 * dot01
-    #if denom == 0:
-        #return False
-    #inv_denom = 1 / denom
-    #u = (dot11 * dot02 - dot01 * dot12) * inv_denom
-    #v = (dot00 * dot12 - dot01 * dot02) * inv_denom
-#
-    #return (u >= 0) and (v >= 0) and (u + v <= 1)

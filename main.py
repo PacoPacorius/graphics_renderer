@@ -5,6 +5,8 @@ from typing import Tuple
 import math
 import polygon_fill
 import vec_inter
+import argparse
+import time
 
 def translate(t_vec: np.ndarray) -> np.ndarray:
     """
@@ -140,7 +142,7 @@ def rasterize(pts_2d: np.ndarray, plane_w: int, plane_h: int, res_w: int, res_h:
 
     return pts_raster
 
-def render_object(v_pos, v_clr, t_pos_idx, plane_h, plane_w, res_h, res_w, focal, eye, up, target, v_uvs=None, shading='f') -> np.ndarray:
+def render_object(v_pos, v_clr, t_pos_idx, plane_h, plane_w, res_h, res_w, focal, eye, up, target, v_uvs=None, shading='t') -> np.ndarray:
     """
     Render the specified object from the specified camera using polygon_fill functions.
     """
@@ -214,334 +216,247 @@ def load_data():
         'k_cam_target': k_cam_target
     }
 
-def demo_case1():
+def precompute_animation_data(data, case_type='case1', fps=25, duration=5):
+    """
+    Precompute all animation frame data to avoid redundant calculations during animation.
+    """
+    num_frames = fps * duration
+    
+    # Extract common parameters
+    k_road_radius = data['k_road_radius']
+    k_road_center = data['k_road_center']
+    k_cam_car_rel_pos = data['k_cam_car_rel_pos']
+    k_cam_target = data.get('k_cam_target', np.array([0, 0, 0]))
+    
+    # Precompute trigonometric values
+    t_values = np.linspace(0, 2 * np.pi, num_frames)
+    cos_values = np.cos(t_values)
+    sin_values = np.sin(t_values)
+    
+    # Precompute car positions
+    car_positions = k_road_center + k_road_radius * np.column_stack([cos_values, sin_values, np.zeros(num_frames)])
+    
+    # Precompute speed vectors (tangent to circle)
+    speed_vectors = np.column_stack([-sin_values, cos_values, np.zeros(num_frames)])
+    
+    # Precompute camera data based on case type
+    if case_type == 'case1':
+        # Static camera relative to car
+        cam_positions = car_positions + k_cam_car_rel_pos
+        cam_targets = car_positions + speed_vectors
+    elif case_type == 'case2':
+        # Camera rotates around car
+        cam_angles = t_values * 2  # Camera spins faster
+        cos_cam = np.cos(cam_angles)
+        sin_cam = np.sin(cam_angles)
+        
+        cam_rel_positions = np.column_stack([
+            k_cam_car_rel_pos[0] * cos_cam - k_cam_car_rel_pos[1] * sin_cam,
+            k_cam_car_rel_pos[0] * sin_cam + k_cam_car_rel_pos[1] * cos_cam,
+            np.full(num_frames, k_cam_car_rel_pos[2])
+        ])
+        
+        cam_positions = car_positions + cam_rel_positions
+        cam_targets = np.tile(k_cam_target, (num_frames, 1))
+    
+    return {
+        'car_positions': car_positions,
+        'cam_positions': cam_positions,
+        'cam_targets': cam_targets,
+        'num_frames': num_frames
+    }
+
+def create_animation(case_type='case1', save_to_disk=False, show_on_screen=True, fps=25, duration=5):
+    """
+    Create optimized animation with option to save or display.
+    """
+    print(f"Running Optimized {case_type.title()}: {'Saving to disk' if save_to_disk else 'Showing on screen'}")
+    
+    # Load data
+    data = load_data()
+    
+    # Extract parameters
+    v_pos = data['v_pos']
+    v_uvs = data['v_uvs']
+    t_pos_idx = data['t_pos_idx']
+    k_f = data['k_f']
+    k_sensor_width = data['k_sensor_width']
+    k_sensor_height = data['k_sensor_height']
+    k_cam_up = data['k_cam_up']
+    
+    # Create optimized vertex colors (single computation)
+    np.random.seed(42)  # For reproducible colors
+    v_clr = np.random.rand(v_pos.shape[0], 3)
+    
+    # Precompute all frame data
+    print("Precomputing animation data...")
+    start_time = time.time()
+    anim_data = precompute_animation_data(data, case_type, fps, duration)
+    precompute_time = time.time() - start_time
+    print(f"Precomputation completed in {precompute_time:.2f} seconds")
+    
+    # Set up the figure and axis
+    if show_on_screen:
+        fig, ax = plt.subplots(figsize=(8, 8))
+        ax.set_xlim(0, 512)
+        ax.set_ylim(0, 512)
+        ax.set_aspect('equal')
+        ax.axis('off')
+        ax.set_title(f'{case_type.title()}: {"Static" if case_type == "case1" else "Spinning"} Camera Animation (Optimized)')
+        
+        # Initialize empty image
+        im = ax.imshow(np.ones((512, 512, 3), dtype=np.uint8) * 255, animated=True)
+    else:
+        fig, ax, im = None, None, None
+    
+    def animate_frame(frame):
+        # Get precomputed data for this frame
+        car_pos = anim_data['car_positions'][frame]
+        cam_pos = anim_data['cam_positions'][frame]
+        cam_target = anim_data['cam_targets'][frame]
+        
+        # Render frame using polygon_fill functions
+        img = render_object(
+            v_pos + car_pos,  # Translate object to car position
+            v_clr,
+            t_pos_idx,
+            k_sensor_height,
+            k_sensor_width,
+            512,  # res_h
+            512,  # res_w
+            k_f,
+            cam_pos,
+            k_cam_up,
+            cam_target,
+            v_uvs,
+            shading='t' if case_type == 'case1' else 'f'
+        )
+        
+        if show_on_screen:
+            im.set_array(img)
+            return [im]
+        else:
+            return img
+    
+    # Create animation
+    if show_on_screen and not save_to_disk:
+        # Show animation on screen only
+        anim = animation.FuncAnimation(
+            fig, animate_frame, frames=anim_data['num_frames'],
+            interval=1000/fps, blit=True, repeat=True
+        )
+        plt.tight_layout()
+        plt.show()
+        return anim
+    
+    elif save_to_disk and not show_on_screen:
+        # Save animation to disk only (no display)
+        print("Generating frames for video...")
+        start_time = time.time()
+        
+        # Generate all frames without displaying
+        frames = []
+        for frame in range(anim_data['num_frames']):
+            if frame % 25 == 0:  # Progress indicator
+                print(f"Rendering frame {frame}/{anim_data['num_frames']}")
+            img = animate_frame(frame)
+            frames.append(img)
+        
+        render_time = time.time() - start_time
+        print(f"Frame rendering completed in {render_time:.2f} seconds")
+        
+        # Create a minimal animation for saving
+        fig, ax = plt.subplots(figsize=(8, 8))
+        ax.set_xlim(0, 512)
+        ax.set_ylim(0, 512)
+        ax.set_aspect('equal')
+        ax.axis('off')
+        im = ax.imshow(frames[0], animated=True)
+        
+        def save_animate_frame(frame):
+            im.set_array(frames[frame])
+            return [im]
+        
+        anim = animation.FuncAnimation(
+            fig, save_animate_frame, frames=len(frames),
+            interval=1000/fps, blit=True, repeat=False
+        )
+        
+        # Save animation
+        filename = f'{case_type}_animation_optimized.mp4'
+        print(f"Saving animation to {filename}...")
+        start_time = time.time()
+        anim.save(filename, writer='ffmpeg', fps=fps, bitrate=1800)
+        save_time = time.time() - start_time
+        print(f"Animation saved in {save_time:.2f} seconds")
+        
+        plt.close(fig)  # Close figure to free memory
+        return anim
+    
+    else:
+        # Both save and show (original behavior but optimized)
+        anim = animation.FuncAnimation(
+            fig, animate_frame, frames=anim_data['num_frames'],
+            interval=1000/fps, blit=True, repeat=True
+        )
+        
+        if save_to_disk:
+            filename = f'{case_type}_animation_optimized.mp4'
+            print(f"Saving animation to {filename}...")
+            anim.save(filename, writer='ffmpeg', fps=fps, bitrate=1800)
+        
+        if show_on_screen:
+            plt.tight_layout()
+            plt.show()
+        
+        return anim
+
+def demo_case1(save_to_disk=False, show_on_screen=True):
     """
     Case 1: Static camera with z-axis parallel to car's speed vector.
-    Creates an animated version with 25 fps for 5 seconds.
     """
-    print("Running Animated Case 1: Static camera")
+    return create_animation('case1', save_to_disk, show_on_screen)
 
-    # Load data
-    data = load_data()
-
-    # Extract parameters
-    k_road_radius = data['k_road_radius']
-    k_road_center = data['k_road_center']
-    car_velocity = data['car_velocity']
-    k_cam_car_rel_pos = data['k_cam_car_rel_pos']
-    k_cam_up = data['k_cam_up']
-    v_pos = data['v_pos']
-    v_uvs = data['v_uvs']
-    t_pos_idx = data['t_pos_idx']
-    k_f = data['k_f']
-    k_sensor_width = data['k_sensor_width']
-    k_sensor_height = data['k_sensor_height']
-
-    print(f"DEBUG - Road radius: {k_road_radius}")
-    print(f"DEBUG - Road center: {k_road_center}")
-    print(f"DEBUG - Car velocity: {car_velocity}")
-    print(f"DEBUG - Camera relative position: {k_cam_car_rel_pos}")
-    print(f"DEBUG - Object vertices shape: {v_pos.shape}")
-    print(f"DEBUG - Object faces shape: {t_pos_idx.shape}")
-    print(f"DEBUG - Focal length: {k_f}")
-    print(f"DEBUG - Sensor size: {k_sensor_width}x{k_sensor_height}")
-    print(f"DEBUG - Object bounds: min={np.min(v_pos, axis=0)}, max={np.max(v_pos, axis=0)}")
-
-    # Create simple vertex colors
-    v_clr = np.random.rand(v_pos.shape[0], 3)
-
-    # Animation parameters - 25 fps for 5 seconds = 125 frames
-    fps = 25
-    duration = 5
-    num_frames = fps * duration
-
-    # Set up the figure and axis
-    fig, ax = plt.subplots(figsize=(8, 8))
-    ax.set_xlim(0, 512)  # Updated to match polygon_fill expected resolution
-    ax.set_ylim(0, 512)
-    ax.set_aspect('equal')
-    ax.axis('off')
-    ax.set_title('Case 1: Static Camera Animation (Using polygon_fill)')
-
-    # Initialize empty image
-    im = ax.imshow(np.ones((512, 512, 3), dtype=np.uint8) * 255, animated=True)
-
-    def animate_frame(frame):
-        # Calculate car position on circular path
-        t = frame / num_frames * 2 * np.pi
-        car_pos = k_road_center + k_road_radius * np.array([np.cos(t), np.sin(t), 0])
-
-        # Car's speed vector (tangent to circle)
-        speed_vector = np.array([-np.sin(t), np.cos(t), 0])
-
-        # Camera position (static relative to car)
-        cam_pos = car_pos + k_cam_car_rel_pos
-
-        # Camera target (along speed vector)
-        cam_target = car_pos + speed_vector
-
-        # Render frame using polygon_fill functions
-        img = render_object(
-            v_pos + car_pos,  # Translate object to car position
-            v_clr,
-            t_pos_idx,
-            k_sensor_height,
-            k_sensor_width,
-            512,  # res_h (match polygon_fill expected size)
-            512,  # res_w
-            k_f,
-            cam_pos,
-            k_cam_up,
-            cam_target,
-            v_uvs,
-            shading='f'  # Use flat shading
-        )
-
-        im.set_array(img)
-        return [im]
-
-    # Create and run animation
-    anim = animation.FuncAnimation(
-        fig, animate_frame, frames=num_frames,
-        interval=1000/fps, blit=True, repeat=True
-    )
-
-    plt.tight_layout()
-    plt.show()
-
-    return anim
-
-def demo_case2():
+def demo_case2(save_to_disk=False, show_on_screen=True):
     """
     Case 2: Camera spins around and always points to k_cam_target.
-    Creates an animated version with 25 fps for 5 seconds.
     """
-    print("Running Animated Case 2: Spinning camera")
-
-    # Load data
-    data = load_data()
-
-    # Extract parameters
-    k_road_radius = data['k_road_radius']
-    k_road_center = data['k_road_center']
-    car_velocity = data['car_velocity']
-    k_cam_car_rel_pos = data['k_cam_car_rel_pos']
-    k_cam_up = data['k_cam_up']
-    k_cam_target = data['k_cam_target']
-    v_pos = data['v_pos']
-    v_uvs = data['v_uvs']
-    t_pos_idx = data['t_pos_idx']
-    k_f = data['k_f']
-    k_sensor_width = data['k_sensor_width']
-    k_sensor_height = data['k_sensor_height']
-
-    # Create simple vertex colors
-    v_clr = np.random.rand(v_pos.shape[0], 3)
-
-    # Animation parameters - 25 fps for 5 seconds = 125 frames
-    fps = 25
-    duration = 5
-    num_frames = fps * duration
-
-    # Set up the figure and axis
-    fig, ax = plt.subplots(figsize=(8, 8))
-    ax.set_xlim(0, 512)  # Updated to match polygon_fill expected resolution
-    ax.set_ylim(0, 512)
-    ax.set_aspect('equal')
-    ax.axis('off')
-    ax.set_title('Case 2: Spinning Camera Animation (Using polygon_fill)')
-
-    # Initialize empty image
-    im = ax.imshow(np.ones((512, 512, 3), dtype=np.uint8) * 255, animated=True)
-
-    def animate_frame(frame):
-        # Calculate car position on circular path
-        t = frame / num_frames * 2 * np.pi
-        car_pos = k_road_center + k_road_radius * np.array([np.cos(t), np.sin(t), 0])
-
-        # Camera rotates around the car
-        cam_angle = t * 2  # Camera spins faster than car moves
-        cam_rel_pos = np.array([
-            k_cam_car_rel_pos[0] * np.cos(cam_angle) - k_cam_car_rel_pos[1] * np.sin(cam_angle),
-            k_cam_car_rel_pos[0] * np.sin(cam_angle) + k_cam_car_rel_pos[1] * np.cos(cam_angle),
-            k_cam_car_rel_pos[2]
-        ])
-        cam_pos = car_pos + cam_rel_pos
-
-        # Camera always points to target
-        cam_target = k_cam_target
-
-        # Render frame using polygon_fill functions
-        img = render_object(
-            v_pos + car_pos,  # Translate object to car position
-            v_clr,
-            t_pos_idx,
-            k_sensor_height,
-            k_sensor_width,
-            512,  # res_h (match polygon_fill expected size)
-            512,  # res_w
-            k_f,
-            cam_pos,
-            k_cam_up,
-            cam_target,
-            v_uvs,
-            shading='f'  # Use flat shading
-        )
-
-        im.set_array(img)
-        return [im]
-
-    # Create and run animation
-    anim = animation.FuncAnimation(
-        fig, animate_frame, frames=num_frames,
-        interval=1000/fps, blit=True, repeat=True
-    )
-
-    plt.tight_layout()
-    plt.show()
-
-    return anim
-
-def run_both_animations():
-    """
-    Run both animations simultaneously in separate windows.
-    """
-    print("3D Graphics Animation Demo")
-    print("=" * 40)
-    print("Each animation runs at 25 fps for 5 seconds (125 frames total)")
-    print("Close the animation windows to continue...")
-
-    # Run Case 1 animation
-    print("\nStarting Case 1 Animation...")
-    anim1 = demo_case1()
-
-    # Run Case 2 animation
-    print("\nStarting Case 2 Animation...")
-    anim2 = demo_case2()
-
-    return anim1, anim2
-
-def save_animations():
-    """
-    Optional function to save animations as MP4 files.
-    Requires ffmpeg to be installed.
-    """
-    print("Saving animations as MP4 files...")
-
-    # You can uncomment and modify this section to save animations
-    # Note: Requires ffmpeg to be installed on your system
-
-    anim1 = demo_case1()
-    anim1.save('case1_animation.mp4', writer='ffmpeg', fps=25)
-
-    anim2 = demo_case2()
-    anim2.save('case2_animation.mp4', writer='ffmpeg', fps=25)
-
-    print("Animations saved!")
+    return create_animation('case2', save_to_disk, show_on_screen)
 
 def main():
     """
-    Main function to run both animated demos.
+    Main function with command line arguments to control save/display behavior.
     """
-    # Run the animations
-    #animations = run_both_animations()
-
-    save_animations()
+    parser = argparse.ArgumentParser(description='3D Graphics Animation Demo')
+    parser.add_argument('--mode', choices=['show', 'save', 'both'], default='show',
+                       help='Mode: show on screen, save to disk, or both (default: show)')
+    parser.add_argument('--case', choices=['case1', 'case2', 'both'], default='both',
+                       help='Which case to run: case1, case2, or both (default: both)')
+    parser.add_argument('--fps', type=int, default=25,
+                       help='Frames per second (default: 25)')
+    parser.add_argument('--duration', type=int, default=5,
+                       help='Duration in seconds (default: 5)')
+    
+    args = parser.parse_args()
+    
+    save_to_disk = args.mode in ['save', 'both']
+    show_on_screen = args.mode in ['show', 'both']
+    
+    print("3D Graphics Animation Demo (Optimized)")
+    print("=" * 50)
+    print(f"Mode: {args.mode}")
+    print(f"Cases: {args.case}")
+    print(f"Animation: {args.fps} fps for {args.duration} seconds ({args.fps * args.duration} frames total)")
+    
+    if args.case in ['case1', 'both']:
+        print(f"\n{'='*20} CASE 1 {'='*20}")
+        demo_case1(save_to_disk, show_on_screen)
+    
+    if args.case in ['case2', 'both']:
+        print(f"\n{'='*20} CASE 2 {'='*20}")
+        demo_case2(save_to_disk, show_on_screen)
+    
     print("\nAnimations completed!")
 
-    #return animations
-
 if __name__ == "__main__":
-    animations = main()
-
-
-#def render_object_simple(v_pos, v_clr, t_pos_idx, plane_h, plane_w, res_h, res_w, focal, eye, up, target) -> np.ndarray:
-    #"""
-    #Fallback simple rendering function (original implementation).
-    #"""
-    ## Get camera transformation
-    #R, t = lookat(eye, up, target)
-#
-    ## Project vertices to 2D
-    #pts_2d, depths = perspective_project(v_pos.T, focal, R, t)
-#
-    ## Rasterize to pixel coordinates
-    #pts_raster = rasterize(pts_2d, plane_w, plane_h, res_w, res_h)
-#
-    ## Create image
-    #img = np.ones((res_h, res_w, 3), dtype=np.uint8) * 255
-#
-    ## Simple triangle rendering (using your polygon_fill logic)
-    ## For this demo, we'll use a simplified approach
-    #vertices_2d = pts_raster.T
-#
-    ## Sort triangles by depth (painter's algorithm)
-    #triangle_depths = []
-    #for i in range(t_pos_idx.shape[0]):
-        #face = t_pos_idx[i]
-        #avg_depth = np.mean([depths[face[0]], depths[face[1]], depths[face[2]]])
-        #triangle_depths.append((i, avg_depth))
-#
-    ## Sort by depth (furthest first)
-    #triangle_depths.sort(key=lambda x: x[1], reverse=True)
-#
-    ## Render triangles
-    #for tri_idx, _ in triangle_depths:
-        #face = t_pos_idx[tri_idx]
-#
-        ## Get triangle vertices in pixel coordinates
-        #tri_vertices = vertices_2d[face]
-        #tri_colors = v_clr[face]
-#
-        ## Simple flat shading - use average color
-        #avg_color = np.mean(tri_colors, axis=0) * 255
-        #avg_color = avg_color.astype(np.uint8)
-#
-        ## Simple triangle fill (basic scanline)
-        #fill_triangle(img, tri_vertices, avg_color)
-#
-    #return img
-#
-#def fill_triangle(img, vertices, color):
-    #"""
-    #Simple triangle filling using scanline algorithm.
-    #"""
-    #h, w = img.shape[:2]
-#
-    ## Convert to integer coordinates
-    #vertices = np.round(vertices).astype(int)
-#
-    ## Find bounding box
-    #min_y = max(0, np.min(vertices[:, 1]))
-    #max_y = min(h-1, np.max(vertices[:, 1]))
-    #min_x = max(0, np.min(vertices[:, 0]))
-    #max_x = min(w-1, np.max(vertices[:, 0]))
-#
-    ## Simple point-in-triangle test for each pixel
-    #for y in range(min_y, max_y + 1):
-        #for x in range(min_x, max_x + 1):
-            #if point_in_triangle([x, y], vertices):
-                #img[h-1-y, x] = color  # Flip y coordinate, origin is bottom-left
-#
-#def point_in_triangle(p, triangle):
-    #"""
-    #Check if point p is inside triangle using barycentric coordinates.
-    #"""
-    #v0 = triangle[2] - triangle[0]
-    #v1 = triangle[1] - triangle[0]
-    #v2 = np.array(p) - triangle[0]
-#
-    #dot00 = np.dot(v0, v0)
-    #dot01 = np.dot(v0, v1)
-    #dot02 = np.dot(v0, v2)
-    #dot11 = np.dot(v1, v1)
-    #dot12 = np.dot(v1, v2)
-#
-    #denom = dot00 * dot11 - dot01 * dot01
-    #if denom == 0:
-        #return False
-    #inv_denom = 1 / denom
-    #u = (dot11 * dot02 - dot01 * dot12) * inv_denom
-    #v = (dot00 * dot12 - dot01 * dot02) * inv_denom
-#
-    #return (u >= 0) and (v >= 0) and (u + v <= 1)
+    main()

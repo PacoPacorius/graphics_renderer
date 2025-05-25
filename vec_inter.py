@@ -1,6 +1,34 @@
 import numpy as np
 import math
 
+def vector_interp(p1, p2, V1, V2, coord, dim):
+    """
+    Γραμμική παρεμβολή μεταξύ V1 και V2 για σημείο p στο ευθύγραμμο τμήμα p1p2.
+
+    Arguments:
+    - p1, p2: 2D συντεταγμένες των σημείων (x1, y1), (x2, y2)
+    - V1, V2: διανυσματικές τιμές στα σημεία p1 και p2 (π.χ. RGB ή UV)
+    - coord: η συντεταγμένη του σημείου p (είτε x είτε y)
+    - dim: αν dim == 1 → x, αν dim == 2 → y
+
+    Returns:
+    - V: παρεμβολημένη διανυσματική τιμή στο σημείο p
+    """
+    if dim == 1:
+        a = p1[0]
+        b = p2[0]
+    elif dim == 2:
+        a = p1[1]
+        b = p2[1]
+    else:
+        raise ValueError("dim must be 1 (x) or 2 (y)")
+
+    if b == a:
+        return (V1 + V2) / 2  # avoid division by zero
+
+    t = (coord - a) / (b - a)
+    return (1 - t) * V1 + t * V2
+
 def vector_inter(p1, p2, V1, V2, coord, dim):
     p = np.zeros(2)
 

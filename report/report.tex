@@ -28,6 +28,59 @@
 
 \begin{document}
 \maketitle
+\emph{INTRO}
+
+\section{Συναρτήσεις Μ/Σ}
+\subsection{def translate(t\_vec: np.ndarray) -> np.ndarray}
+Σε αυτή τη συνάρτηση αρχικοποιείται ο $4x4$ πίνακας εξόδου xform ως
+μοναδιαίος πίνακας. Στην τελευταία στήλη του τοποθετείται το διάνυσμα 
+μετατόπισης t\_vec (το κάτω δεξιά στοιχείο του πίνακα μένει ανέπαφο, 
+δηλαδή ίσο με 1) και ο $4x4$ πίνακας Μ/Σ μετατόπισης είναι έτοιμος.
+\subsection{def rotate(axis: np.ndarray, angle: float, center: np.ndarray) -> np.ndarray}
+Η υλοποίηση της συνάρτησης ξεκινάει με την κανονικοποίηση του διανύσματος 
+του άξονα περιστροφής axis. Έπειτα υπολογίζεται ο πίνακας $Κ$:
+
+\begin{equation}
+    K = \left[\begin{matrix}
+        0 & -axis_z & axis_y \\
+        axis_z & 0 & -axis_x \\
+        -axis_y & axis_x & 0
+    \end{matrix}\right]
+\end{equation}
+ο οποίος χρησιμοποιείται στο matrix notation του τύπου περιστροφής του
+Rodrigues ως εξής:
+
+\begin{equation}
+    R_{3x3} = I_{3x3} + sin(\theta) * K + (1-cos(\theta)) * K^2
+\end{equation}
+όπου $\theta$ η γωνία περιστροφής (μεταβλητή εισόδου angle) και $K^2$ το dot 
+matrix product του πίνακα $K$. Επειδή ο τύπος του Rodrigues λειτουργεί για
+ένα σύστημα συντεταγμένων, θεωρούμε ότι το κέντρο των αξόνων κάθε φορά
+είναι το σημείο center. Για αυτό υπολογίζονται οι πίνακες μετατόπισης 
+από και προς το σημείο center με τη βοήθεια της παραπάνω συνάρτησης 
+translate(). Προκύπτουν οι πίνακες:
+\begin{gather*}
+    T_{to\_origin} = translate(-center) \\
+    T_{back} = translate(center)
+\end{gather*}
+Ο πίνακας $R$ μετατρέπεται σε ομογενής:
+\begin{equation}
+    R_{4x4} = \left[\begin{matrix}
+        R & 0 \\
+        0 & 1
+    \end{matrix}\right]
+\end{equation}
+και τελικά ο  $4x4$ πίνακας εξόδου είναι ο 
+\begin{equation}
+    xform_{4x4} = T_{back} * R_{4x4} * T_{to\_origin}
+\end{equation}
+
+Ουσιαστικά γίνεται πρώτα η μετατροπή συστήματος συντεταγμένων στο 
+σύστημα συντεταγμένων του άξονα περιστροφής (με κέντρο το center)
+με τον πολλαπλασιασμό με τον πίνακα $T_{to\_origin}$,
+γίνεται η περιστροφή με τον πίνακα $R$ και τέλος γίνεται η
+αλλαγή στο αρχικό σύστημα συντεταγμένων με τον πίνακα $T_{back}$.
+
 %Prompt:
 %I want to make a graphics renderer in python. It is comprised of the following
 %functions:

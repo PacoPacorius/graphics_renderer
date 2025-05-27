@@ -35,18 +35,14 @@ def rotate(axis: np.ndarray, angle: float, center: np.ndarray) -> np.ndarray:
     # Rotation matrix using Rodrigues' formula
     R = np.eye(3) + sin_a * K + (1 - cos_a) * np.dot(K, K)
 
-    # Create 4x4 homogeneous transformation matrix
-    xform = np.eye(4)
-    xform[0:3, 0:3] = R
+    # Rotation around center
+    R_homogeneous = np.eye(4)
+    R_homogeneous[0:3, 0:3] = R
 
     # Apply translation to rotate around center point
     # T = T(center) * R * T(-center)
     T_to_origin = translate(-center)
     T_back = translate(center)
-
-    # Rotation around center
-    R_homogeneous = np.eye(4)
-    R_homogeneous[0:3, 0:3] = R
 
     xform = T_back @ R_homogeneous @ T_to_origin
 
@@ -140,111 +136,71 @@ def rasterize(pts_2d: np.ndarray, plane_w: int, plane_h: int, res_w: int, res_h:
 
     return pts_raster
 
-def render_object(v_pos, v_clr, t_pos_idx, plane_h, plane_w, res_h, res_w, focal, eye, up, target, v_uvs=None, shading='t', texture_img=None) -> np.ndarray:
+def render_object(v_pos, v_tex, t_pos_idx, tex_img, plane_h, plane_w, res_h, res_w, focal, eye, up, target) -> np.ndarray:
     """
-    Render the object using custom triangle rasterization and perspective-correct texture mapping.
+    Render a textured object from the specified camera.
     """
-    img = np.ones((res_h, res_w, 3), dtype=np.uint8) * 255
-    z_buffer = np.full((res_h, res_w), np.inf)
-
     R, t = lookat(eye, up, target)
     pts_2d, depths = perspective_project(v_pos.T, focal, R, t)
-    pts_raster = rasterize(pts_2d, plane_w, plane_h, res_w, res_h).T  # (N, 2)
+    pts_raster = rasterize(pts_2d, plane_w, plane_h, res_w, res_h)
 
-    if v_uvs is None:
-        v_uvs = np.zeros((v_pos.shape[0], 2))
+    img = np.zeros((res_h, res_w, 3), dtype=np.uint8)
+    zbuffer = np.full((res_h, res_w), np.inf)
 
-    inv_z = 1.0 / depths
-    u_over_z = (v_uvs[:, 0] * inv_z)
-    v_over_z = (v_uvs[:, 1] * inv_z)
+    h_tex, w_tex, _ = tex_img.shape
 
     for tri in t_pos_idx:
-        i0, i1, i2 = tri
-        v0, v1, v2 = pts_raster[i0], pts_raster[i1], pts_raster[i2]
-        z0, z1, z2 = depths[i0], depths[i1], depths[i2]
-        iz0, iz1, iz2 = inv_z[i0], inv_z[i1], inv_z[i2]
-        u0, u1, u2 = u_over_z[i0], u_over_z[i1], u_over_z[i2]
-        v0_, v1_, v2_ = v_over_z[i0], v_over_z[i1], v_over_z[i2]
+        idx0, idx1, idx2 = tri
+        p0, p1, p2 = pts_raster[:, idx0], pts_raster[:, idx1], pts_raster[:, idx2]
+        z0, z1, z2 = depths[idx0], depths[idx1], depths[idx2]
+        t0, t1, t2 = v_tex[idx0], v_tex[idx1], v_tex[idx2]
 
-        # Triangle bounding box
-        min_x = max(int(np.floor(min(v0[0], v1[0], v2[0]))), 0)
-        max_x = min(int(np.ceil(max(v0[0], v1[0], v2[0]))), res_w - 1)
-        min_y = max(int(np.floor(min(v0[1], v1[1], v2[1]))), 0)
-        max_y = min(int(np.ceil(max(v0[1], v1[1], v2[1]))), res_h - 1)
+        min_x = max(int(np.floor(min(p0[0], p1[0], p2[0]))), 0)
+        max_x = min(int(np.ceil(max(p0[0], p1[0], p2[0]))), res_w - 1)
+        min_y = max(int(np.floor(min(p0[1], p1[1], p2[1]))), 0)
+        max_y = min(int(np.ceil(max(p0[1], p1[1], p2[1]))), res_h - 1)
 
-        # Edge function
-        def edge(a, b, c):
-            return (c[0] - a[0]) * (b[1] - a[1]) - (c[1] - a[1]) * (b[0] - a[0])
-
-        area = edge(v0, v1, v2)
-        if area == 0:
+        v0 = p1 - p0
+        v1 = p2 - p0
+        denom = v0[0] * v1[1] - v1[0] * v0[1]
+        if np.abs(denom) < 1e-6:
             continue
 
         for y in range(min_y, max_y + 1):
             for x in range(min_x, max_x + 1):
                 p = np.array([x + 0.5, y + 0.5])
-                w0 = edge(v1, v2, p)
-                w1 = edge(v2, v0, p)
-                w2 = edge(v0, v1, p)
+                v2 = p - p0
+                a = (v2[0] * v1[1] - v1[0] * v2[1]) / denom
+                b = (v0[0] * v2[1] - v2[0] * v0[1]) / denom
+                c = 1 - a - b
 
-                if (w0 >= 0 and w1 >= 0 and w2 >= 0) or (w0 <= 0 and w1 <= 0 and w2 <= 0):
-                    w0 /= area
-                    w1 /= area
-                    w2 /= area
+                if a >= 0 and b >= 0 and c >= 0:
+                    z = a * z1 + b * z2 + c * z0
+                    if z < zbuffer[y, x]:
+                        zbuffer[y, x] = z
+                        tex_coord = a * t1 + b * t2 + c * t0
+                        u = np.clip(tex_coord[0] * w_tex, 0, w_tex - 1)
+                        v = np.clip((1 - tex_coord[1]) * h_tex, 0, h_tex - 1)  # flip v-axis
 
-                    inv_z_interp = w0 * iz0 + w1 * iz1 + w2 * iz2
-                    if inv_z_interp <= 0:
-                        continue
-                    z = 1.0 / inv_z_interp
+                        # Bilinear sampling
+                        i, j = int(np.floor(v)), int(np.floor(u))
+                        di, dj = v - i, u - j
+                        i1, j1 = min(i + 1, h_tex - 1), min(j + 1, w_tex - 1)
 
-                    u_interp = (w0 * u0 + w1 * u1 + w2 * u2) * z
-                    v_interp = (w0 * v0_ + w1 * v1_ + w2 * v2_) * z
+                        tl = tex_img[i, j]
+                        tr = tex_img[i, j1]
+                        bl = tex_img[i1, j]
+                        br = tex_img[i1, j1]
 
-                    if z < z_buffer[y, x]:
-                        tex_w, tex_h = texture_img.shape[1], texture_img.shape[0]
-                        tex_x = int(np.clip(u_interp * tex_w, 0, tex_w - 1))
-                        tex_y = int(np.clip((1 - v_interp) * tex_h, 0, tex_h - 1))  # flip Y
+                        top = (1 - dj) * tl + dj * tr
+                        bottom = (1 - dj) * bl + dj * br
+                        color = (1 - di) * top + di * bottom
 
-                        img[y, x] = texture_img[tex_y, tex_x]
-                        z_buffer[y, x] = z
+                        img[y, x] = np.clip(color, 0, 255).astype(np.uint8)
 
     return img
 
 
-#def render_object(v_pos, v_clr, t_pos_idx, plane_h, plane_w, res_h, res_w, focal, eye, up, target, v_uvs=None, shading='t') -> np.ndarray:
-    #"""
-    #Render the specified object from the specified camera using polygon_fill functions.
-    #"""
-    ## Get camera transformation
-    #R, t = lookat(eye, up, target)
-#
-    ## Project vertices to 2D
-    #pts_2d, depths = perspective_project(v_pos.T, focal, R, t)
-#
-    ## Rasterize to pixel coordinates
-    #pts_raster = rasterize(pts_2d, plane_w, plane_h, res_w, res_h)
-#
-    ## Convert to format expected by polygon_fill.render_img
-    ## polygon_fill expects vertices as (N, 2) array
-    #vertices_2d = pts_raster.T
-#
-    ## Ensure we have UV coordinates
-    #if v_uvs is None:
-        ## Create default UV coordinates if not provided
-        #v_uvs = np.random.rand(v_pos.shape[0], 2)
-#
-    ## Call the polygon_fill.render_img function
-    ## Note: render_img expects specific parameter order and formats
-    #img = polygon_fill.render_img(
-        #faces=t_pos_idx,
-        #vertices=vertices_2d,
-        #vcolors=v_clr,
-        #uvs=v_uvs,
-        #depth=depths,
-        #shading=shading
-    #)
-#
-    #return img
 
 def load_data():
     """
@@ -355,8 +311,9 @@ def demo_case1():
         # Render frame using polygon_fill functions
         img = render_object(
             v_pos + car_pos,  # Translate object to car position
-            v_clr,
+            v_uvs,
             t_pos_idx,
+            texImg,
             k_sensor_height,
             k_sensor_width,
             512,  # res_h (match polygon_fill expected size)
@@ -364,10 +321,7 @@ def demo_case1():
             k_f,
             cam_pos,
             k_cam_up,
-            cam_target,
-            v_uvs,
-            shading='t',
-            texture_img=texImg
+            cam_target
         )
 
         im.set_array(img)
@@ -448,8 +402,9 @@ def demo_case2():
         # Render frame using polygon_fill functions
         img = render_object(
             v_pos + car_pos,  # Translate object to car position
-            v_clr,
+            v_uvs,
             t_pos_idx,
+            texImg,
             k_sensor_height,
             k_sensor_width,
             512,  # res_h (match polygon_fill expected size)
@@ -457,10 +412,7 @@ def demo_case2():
             k_f,
             cam_pos,
             k_cam_up,
-            cam_target,
-            v_uvs,
-            shading='t',
-            texture_img=texImg
+            cam_target
         )
 
         im.set_array(img)
